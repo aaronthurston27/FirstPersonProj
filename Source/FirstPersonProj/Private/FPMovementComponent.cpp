@@ -730,6 +730,8 @@ void UFPMovementComponent::PerformFallMovement(const float DeltaTime, const FVec
 		DoJump();
 	}
 
+	TickCrouch(DeltaTime);
+
 	CalculateFallVelocity(InputVector, DeltaTime);
 
 	const FVector MoveDelta = Velocity * DeltaTime;
