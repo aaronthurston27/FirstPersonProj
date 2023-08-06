@@ -27,8 +27,8 @@ UFPMovementComponent::UFPMovementComponent(const FObjectInitializer& ObjectIniti
 	MaxSpeedCrouched = 300.0f;
 	MaxAirSpeed = 1200.0f;
 
-	GroundAcceleration = 1024.0f;
-	BrakingDecelerationWalking = GroundAcceleration;
+	WalkAcceleration = 1024.0f;
+	BrakingDecelerationWalking = WalkAcceleration;
 }
 
 void UFPMovementComponent::PostLoad()
@@ -233,25 +233,43 @@ void UFPMovementComponent::PerformWalkMovement(const float DeltaTime, const FVec
 
 void UFPMovementComponent::CalculateGroundVelocity(const FVector& InputVector, float DeltaTime)
 {
+	if (InputVector.IsNearlyZero() && Velocity.IsNearlyZero())
+	{
+		return;
+	}
+
+	const float PreviousVelocity2D = Velocity.Size2D();
 	const float CurrentMaxGroundSpeed = FMath::Lerp(IsSprinting() ? MaxSprintSpeed : MaxWalkSpeed, MaxSpeedCrouched, CrouchFrac);
 	const FVector TargetVelocity = InputVector.GetSafeNormal2D() * CurrentMaxGroundSpeed;
-	const FVector AccelerationVec = TargetVelocity - Velocity;
+	FVector AccelerationVec = TargetVelocity - Velocity;
+	const bool bIsDecelerating = InputVector.IsNearlyZero() || TargetVelocity.SizeSquared2D() < (PreviousVelocity2D * PreviousVelocity2D);
 
-	float AccelerationToUse = GroundAcceleration;
-	if (InputVector.IsNearlyZero() || TargetVelocity.SizeSquared2D() < Velocity.SizeSquared2D())
+	if (AccelerationVec.IsNearlyZero())
+	{
+		return;
+	}
+
+	float AccelerationToUse = WalkAcceleration;
+	if (bIsDecelerating)
 	{
 		AccelerationToUse = BrakingDecelerationWalking;
 	}
+	else
+	{
+		Velocity = Velocity - (Velocity - AccelerationVec.GetSafeNormal2D() * Velocity.Size2D()) * DeltaTime;
+		AccelerationVec = TargetVelocity - Velocity;
+	}
 	AccelerationToUse *= DeltaTime;
 
-	FVector VelocityDelta = (AccelerationVec.GetSafeNormal2D() * AccelerationToUse);
 	// Prevent new velocity from exceeding desired velocity.
-	if (VelocityDelta.Size2D() > AccelerationVec.Size2D())
+	FVector VelocityDelta = (AccelerationVec.GetSafeNormal2D() * AccelerationToUse);
+	//UE_LOG(LogTemp, Warning, TEXT("before Vel: %s, Delta: %s, Accel Vec: %s"), *Velocity.ToString(), *VelocityDelta.ToString(), *AccelerationVec.ToString());
+	if (VelocityDelta.SizeSquared2D() > AccelerationVec.SizeSquared2D())
 	{
-		const float Scale = AccelerationVec.Size2D() / VelocityDelta.Size2D();
-		VelocityDelta *= Scale;
+		VelocityDelta *= AccelerationVec.Size2D() / VelocityDelta.Size2D();
 	}
 	Velocity += VelocityDelta;
+	//UE_LOG(LogTemp, Warning, TEXT("after Vel: %s, after Delta: %s"), *Velocity.ToString(), *VelocityDelta.ToString());
 }
 
 void UFPMovementComponent::PerformSlideMovement(const float DeltaTime, const FVector& InputVector)

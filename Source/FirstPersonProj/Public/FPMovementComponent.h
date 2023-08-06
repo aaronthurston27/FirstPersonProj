@@ -130,9 +130,13 @@ protected:
 	UPROPERTY(Category = "Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
 	float GroundFriction;
 
-	/** Max Acceleration (rate of change of velocity) while walking on the ground */
+	/** Max Acceleration (rate of change of velocity) while walking. */
 	UPROPERTY(Category = "Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
-	float GroundAcceleration;
+	float WalkAcceleration;
+
+	/** Max Acceleration (rate of change of velocity) while sprinting. */
+	UPROPERTY(Category = "Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
+	float SprintAcceleration;
 
 	/**
 	 * Max angle in degrees of a walkable surface. Any greater than this and it is too steep to be walkable.
