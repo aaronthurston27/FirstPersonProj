@@ -27,9 +27,8 @@ UFPMovementComponent::UFPMovementComponent(const FObjectInitializer& ObjectIniti
 	MaxSpeedCrouched = 300.0f;
 	MaxAirSpeed = 1200.0f;
 
-	WalkingAcceleration = 1024.0f;
-	SprintingAcceleration = 600.0f;
-	BrakingDecelerationWalking =  WalkingAcceleration;
+	GroundAcceleration = 1024.0f;
+	BrakingDecelerationWalking = GroundAcceleration;
 }
 
 void UFPMovementComponent::PostLoad()
@@ -234,53 +233,25 @@ void UFPMovementComponent::PerformWalkMovement(const float DeltaTime, const FVec
 
 void UFPMovementComponent::CalculateGroundVelocity(const FVector& InputVector, float DeltaTime)
 {
-	if (InputVector.IsNearlyZero() && Velocity.IsNearlyZero())
-	{
-		return;
-	}
-
 	const float CurrentMaxGroundSpeed = FMath::Lerp(IsSprinting() ? MaxSprintSpeed : MaxWalkSpeed, MaxSpeedCrouched, CrouchFrac);
 	const FVector TargetVelocity = InputVector.GetSafeNormal2D() * CurrentMaxGroundSpeed;
 	const FVector AccelerationVec = TargetVelocity - Velocity;
-	if (AccelerationVec.IsNearlyZero())
-	{
-		return;
-	}
 
-	float AccelerationToUse = WalkingAcceleration;
-	const bool bShouldDecelerate = InputVector.IsNearlyZero() || TargetVelocity.SizeSquared2D() < Velocity.SizeSquared2D();
-	if (bShouldDecelerate)
+	float AccelerationToUse = GroundAcceleration;
+	if (InputVector.IsNearlyZero() || TargetVelocity.SizeSquared2D() < Velocity.SizeSquared2D())
 	{
-		AccelerationToUse = -BrakingDecelerationWalking;
+		AccelerationToUse = BrakingDecelerationWalking;
 	}
-	else
-	{
-		if (IsSprinting())
-		{
-			// If attempting to sprint, use the walk speed as the base velocity so the player skips accelerating to the walk speed first.
-			float WalkSpeedBase = 0.0f;
-			if (Velocity.Size2D() < MaxWalkSpeed)
-			{
-				WalkSpeedBase = (MaxWalkSpeed - Velocity.Size2D()) / DeltaTime;
-			}
-
-			AccelerationToUse = WalkSpeedBase + SprintingAcceleration;
-		}
-	}
-
 	AccelerationToUse *= DeltaTime;
-	// Do not exceed max speed from applying acceleration.
-	AccelerationToUse = FMath::Clamp(AccelerationToUse, -AccelerationVec.Size2D(), AccelerationVec.Size2D());
 
-	const float New2DSpeed = Velocity.Size2D() + AccelerationToUse;
-	if (!InputVector.IsNearlyZero())
+	FVector VelocityDelta = (AccelerationVec.GetSafeNormal2D() * AccelerationToUse);
+	// Prevent new velocity from exceeding desired velocity.
+	if (VelocityDelta.Size2D() > AccelerationVec.Size2D())
 	{
-		Velocity = TargetVelocity.GetSafeNormal2D() * New2DSpeed;
+		const float Scale = AccelerationVec.Size2D() / VelocityDelta.Size2D();
+		VelocityDelta *= Scale;
 	}
-	else
-	{
-		Velocity = Velocity.GetSafeNormal2D() * New2DSpeed;
-	}
+	Velocity += VelocityDelta;
 }
 
 void UFPMovementComponent::PerformSlideMovement(const float DeltaTime, const FVector& InputVector)
@@ -993,6 +964,7 @@ void UFPMovementComponent::TickCrouch(float DeltaTime)
 		{
 			const bool bWasPreviouslyCrouched = CrouchFrac >= .5f;
 			CrouchFrac = FMath::Max(CrouchFrac - (DeltaTime / TimeToCrouchSeconds), 0.0f);
+			UE_LOG(LogTemp, Warning, TEXT("Uncrouch frac: %f"), CrouchFrac);
 
 			if (bWasPreviouslyCrouched && CrouchFrac < .5f)
 			{
