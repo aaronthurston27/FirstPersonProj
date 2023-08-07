@@ -26,6 +26,8 @@ UFPMovementComponent::UFPMovementComponent(const FObjectInitializer& ObjectIniti
 	MaxSprintSpeed = 750.0f;
 	MaxSpeedCrouched = 300.0f;
 	MaxAirSpeed = 1200.0f;
+	AirBrakingDeceleration = 800.0f;
+
 
 	WalkAcceleration = 1024.0f;
 	BrakingDecelerationWalking = WalkAcceleration;
@@ -734,6 +736,7 @@ void UFPMovementComponent::StartFalling()
 	{
 		CurrentFloor.Clear();
 		TimeFallStartedSeconds = GetWorld()->GetTimeSeconds();
+		InitialJumpVelocity= Velocity.GetSafeNormal2D() * Velocity.Size2D();
 		SetMovementMode(EFPMovementMode::Falling);
 	}
 }
@@ -792,23 +795,65 @@ void UFPMovementComponent::CalculateFallVelocity(const FVector& InputVector, flo
 {
 	const FVector ForwardVector = UpdatedComponent->GetForwardVector();
 	const FVector RightVector = UpdatedComponent->GetRightVector();
+	const FVector LateralInputVector = InputVector.ProjectOnTo(RightVector);
 
 	FVector ForwardVelocity = Velocity.ProjectOnToNormal(ForwardVector);
 	FVector LateralVelocity = Velocity.ProjectOnToNormal(RightVector);
 
-	float MaxForwardAirVelocity = FMath::Min(MaxAirSpeed, FMath::Max(ForwardVelocity.Size2D(), MaxAirSpeed * .20f));
-	FVector TargetForwardVelocity = InputVector.ProjectOnToNormal(ForwardVector) * MaxForwardAirVelocity;
+	float MaxForwardAirVelocity = FMath::Min(MaxAirSpeed, FMath::Max(InitialJumpVelocity.Size2D(), MaxAirSpeed * .20f));
+	FVector TargetForwardVelocity = InputVector.IsNearlyZero() ? ForwardVelocity : InputVector.ProjectOnToNormal(ForwardVector) * MaxForwardAirVelocity;
 
-	FVector InputLateralTargetVelocity = InputVector.ProjectOnTo(RightVector) * MaxAirStrafe;
-	FVector TargetLateralVelocity = FMath::Max(InputLateralTargetVelocity.Size(), LateralVelocity.Size()) * InputLateralTargetVelocity.GetSafeNormal2D();
+	FVector InputLateralTargetVelocity = LateralInputVector * MaxAirStrafe;
+	FVector TargetLateralVelocity = InputVector.IsNearlyZero() ? LateralVelocity : FMath::Max(InputLateralTargetVelocity.Size(), LateralVelocity.Size()) * InputLateralTargetVelocity.GetSafeNormal2D();
 
 	//UE_LOG(LogTemp, Warning, TEXT("Forward Velocity: %s, Lateral Velocity: %s, Current Velocity: %s"), *ForwardVelocity.ToString(), *LateralVelocity.ToString(), *Velocity.ToString());
 	//UE_LOG(LogTemp, Warning, TEXT("Input Vec: %s, Target Forward Velocity: %s, Target Lateral Velocity: %s"), *InputVector.GetSafeNormal2D().ToString(), *TargetForwardVelocity.ToString(), *TargetLateralVelocity.ToString());
 
 	const FVector TargetVelocity = TargetForwardVelocity + TargetLateralVelocity + (FVector::DownVector * GetPhysicsVolume()->TerminalVelocity);
-	const FVector Acceleration = TargetVelocity - Velocity;
+	FVector Acceleration = TargetVelocity - Velocity;
 
-	FVector VelocityDelta = Acceleration.GetSafeNormal2D() * AirAcceleration;
+	FVector ForwardAcceleration = Acceleration.ProjectOnToNormal(ForwardVector);
+	const float ForwardAccelerationDot = ForwardAcceleration.GetSafeNormal2D() | InputVector.GetSafeNormal2D();
+	if (ForwardAccelerationDot <= -.1f)
+	{
+		ForwardAcceleration = ForwardAcceleration.GetSafeNormal2D() * AirBrakingDeceleration * -ForwardAccelerationDot;
+	}
+	else
+	{
+		// Increase acceleration if the player is providing lateral input in the direction they want to turn in the air.
+		// Start by checking how orthogonal the forward vector and velocity are. The more orthogonal, the more the player has to turn.
+		// Scale this value by the dot product between the initial jump vector and the input. This is to ensure the player is inputting the correct direction into the turn.
+		const float TurnAccelerationScalar = (ForwardVector ^ Velocity.GetSafeNormal2D()).Size() * FMath::Max(0.0f, InitialJumpVelocity.GetSafeNormal2D() | -LateralInputVector);
+		const float ForwardAirAcceleration = AirAcceleration * FMath::Lerp(1.0f, 3.0f, TurnAccelerationScalar);
+		//UE_LOG(LogTemp, Warning, TEXT("Air acceleration bonus: %f, final: %f"),  AirAccelerationInputBonus, AirAcceleration + AirAccelerationInputBonus);
+		ForwardAcceleration = ForwardAcceleration.GetSafeNormal2D() * ForwardAirAcceleration;
+	}
+
+	FVector LateralAcceleration = Acceleration.ProjectOnToNormal(RightVector);
+	const float LateralAccelerationDot = LateralAcceleration.GetSafeNormal2D() | InputVector.GetSafeNormal2D();
+	if (LateralAccelerationDot <= -.1f)
+	{
+		LateralAcceleration = LateralAcceleration.GetSafeNormal2D() * AirBrakingDeceleration * -LateralAccelerationDot;
+	}
+	else
+	{
+		LateralAcceleration = LateralAcceleration.GetSafeNormal2D() * AirAcceleration;
+	}
+
+	//UE_LOG(LogTemp, Warning, TEXT("Lat acc: %s, Fow acc:%s"), *LateralAcceleration.ToString(), *ForwardAcceleration.ToString());
+	
+	FVector VelocityDelta = LateralAcceleration + ForwardAcceleration;
+
+	// Subtract the deceleration vector from the velocity to allow the player to change directions.
+	// Scale by friction.
+	if (!Acceleration.GetSafeNormal2D().IsNearlyZero())
+	{
+		const FVector Velocity2D = FVector(Velocity.X, Velocity.Y, 0);
+		Velocity = Velocity - (Velocity2D - VelocityDelta.GetSafeNormal2D() * Velocity2D.Size()) * DeltaTime * AirFrictionFactor;
+		Acceleration = TargetVelocity - Velocity;
+		//UE_LOG(LogTemp, Warning, TEXT("Old vel: %s, New Vel: %s, Accel vector: %s"), *OldVel.ToString(), *Velocity.ToString(), *Acceleration.ToString());
+	}
+	
 	if (VelocityDelta.Size2D() > Acceleration.Size2D())
 	{
 		VelocityDelta *= Acceleration.Size2D() / VelocityDelta.Size2D();
@@ -816,7 +861,7 @@ void UFPMovementComponent::CalculateFallVelocity(const FVector& InputVector, flo
 
 	VelocityDelta.Z = GetGravityZ();
 	VelocityDelta *= DeltaTime;
-	//UE_LOG(LogTemp, Warning, TEXT("Target Velocity: %s, Acceleration: %s, Vel Delta: %s"), *TargetVelocity.ToString(), *Acceleration.ToString(), *VelocityDelta.ToString());
+	//UE_LOG(LogTemp, Warning, TEXT("Target Velocity: %s, Vel Delta: %s"), *TargetVelocity.ToString(),  *VelocityDelta.ToString());
 
 	Velocity += VelocityDelta;
 	Velocity.Z = FMath::Max(Velocity.Z, -GetPhysicsVolume()->TerminalVelocity);
@@ -941,6 +986,12 @@ void UFPMovementComponent::DoJump()
 	FPPCharacter->OnJumped();
 }
 
+void UFPMovementComponent::OnFallMovementStopped()
+{
+	InitialJumpVelocity = FVector::ZeroVector;
+	TimeFallStartedSeconds = 0.0f;
+}
+
 bool UFPMovementComponent::CanCrouch() const
 {
 	return !bIsSprinting && MovementMode != EFPMovementMode::Sliding;
@@ -982,7 +1033,6 @@ void UFPMovementComponent::TickCrouch(float DeltaTime)
 		{
 			const bool bWasPreviouslyCrouched = CrouchFrac >= .5f;
 			CrouchFrac = FMath::Max(CrouchFrac - (DeltaTime / TimeToCrouchSeconds), 0.0f);
-			UE_LOG(LogTemp, Warning, TEXT("Uncrouch frac: %f"), CrouchFrac);
 
 			if (bWasPreviouslyCrouched && CrouchFrac < .5f)
 			{

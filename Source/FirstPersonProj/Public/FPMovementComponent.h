@@ -245,6 +245,13 @@ protected:
 	UPROPERTY(Category = "Character Movement: Jumping / Falling", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
 	float AirAcceleration;
 
+	/** Air braking acceleration */
+	UPROPERTY(Category = "Character Movement: Jumping / Falling", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
+	float AirBrakingDeceleration;
+
+	UPROPERTY(Category = "Character Movement: Jumping / Falling", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0" , ClampMax = "1", UIMax = "1"))
+	float AirFrictionFactor = 1.0f;
+
 	/** Custom gravity scale. Gravity is multiplied by this amount for the character. */
 	UPROPERTY(Category = "Character Movement: Jumping / Falling", EditAnywhere, BlueprintReadWrite)
 	float GravityScale;
@@ -260,6 +267,9 @@ protected:
 	UPROPERTY(Transient)
 	float TimeFallStartedSeconds = 0.0f;
 
+	UPROPERTY(Transient)
+	FVector InitialJumpVelocity = FVector::ZeroVector;
+
 	void StartFalling();
 
 	void CalculateFallVelocity(const FVector& InputVector, float DeltaTime);
@@ -267,6 +277,8 @@ protected:
 	bool CanJump();
 
 	void DoJump();
+
+	void OnFallMovementStopped();
 
 public:
 
