@@ -9,6 +9,7 @@
 #include "EnhancedInputSubsystems.h"
 #include "Components/ArrowComponent.h"
 #include "FPMovementComponent.h"
+#include "Kismet/KismetMathLibrary.h"
 #include "GameFramework/PawnMovementComponent.h"
 
 //////////////////////////////////////////////////////////////////////////
@@ -123,6 +124,27 @@ void AFirstPersonProjCharacter::Tick(float DeltaTime)
 		FRotator MeshRelativeRotation = Mesh1P->GetRelativeRotation();
 		MeshRelativeRotation.Pitch = GetControlRotation().Pitch;
 		Mesh1P->SetRelativeRotation(MeshRelativeRotation);
+	}
+
+
+	const UFPMovementComponent* FPComp = Cast<UFPMovementComponent>(MovementComponent);
+	/*
+	if (FPComp && FPComp->IsMovingOnGround())
+	{
+		const FVector UpVector = FPComp->GetCurrentFloorResult().HitResult.Normal;
+		const FVector VelocityDir = FPComp->Velocity.GetSafeNormal2D();
+		const FVector ForwardVec = UKismetMathLibrary::MakeRotFromZX(UpVector, VelocityDir).Vector();
+
+		const FVector LineDrawStart = GetActorLocation() + (GetControlRotation().Vector() * 3.0f);
+		const FVector LineDrawEnd = GetActorLocation() + (ForwardVec * 400.0f);
+		DrawDebugLine(GetWorld(), LineDrawStart, LineDrawEnd, FColor::Green, false, 20.f, 0, .1f);
+	}
+	*/
+	if (FPComp->IsMovingOnGround())
+	{
+		const FVector RampVector = FVector::VectorPlaneProject(FVector::DownVector, FPComp->GetCurrentFloorResult().HitResult.Normal);
+		//UE_LOG(LogTemp, Warning, TEXT("Ramp vector: %s"), *RampVector.GetSafeNormal().ToString());
+		//DrawDebugLine(GetWorld(), GetPawnFootLocation(), GetPawnFootLocation() + (RampVector * 400.0f), FColor::Green, false, 2.f, 0, .1f);
 	}
 }
 

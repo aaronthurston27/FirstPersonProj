@@ -173,10 +173,6 @@ protected:
 	UPROPERTY(Category = "Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0", ForceUnits = "cm/s"))
 	float MaxSpeedCrouched;
 
-	/** The maximum speed while sliding. */
-	UPROPERTY(Category = "Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0", ForceUnits = "cm/s"))
-	float MaxSlideSpeed;
-
 	/** Information about the floor the Character is standing on (updated only during walking movement). */
 	UPROPERTY(Category = "Character Movement: Walking", VisibleInstanceOnly, BlueprintReadOnly)
 	FFindFloorResult CurrentFloor;
@@ -293,6 +289,9 @@ public:
 
 	virtual float GetGravityZ() const override;
 
+	UFUNCTION(BlueprintPure)
+	const FFindFloorResult& GetCurrentFloorResult() const;
+
 protected:
 
 	UPROPERTY(EditDefaultsOnly)
@@ -331,6 +330,72 @@ public:
 	float GetCrouchedHalfHeight() const;
 
 	float GetDefaultCapsuelHalfHeight() const;
+
+protected:
+
+	UPROPERTY(Category = "Character Movement: Sliding", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
+	float MaxSlideSpeed = 900.0f;
+
+	UPROPERTY(Category = "Character Movement: Sliding", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
+	float SlideFrictionFactor = .3f;
+
+	UPROPERTY(Category = "Character Movement: Sliding", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
+	float SlideBrakingDeceleration = 1500.0f;
+
+	UPROPERTY(Category = "Character Movement: Sliding", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
+	float SlideGravityAcceleration = 1000.0f;
+
+	UPROPERTY(Category = "Character Movement: Sliding", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
+	float SlideLateralAcceleration = 200.0f;
+
+	UPROPERTY(Category = "Character Movement: Sliding", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
+	float TimeToCrouchSliding = .2f;
+
+	UPROPERTY(Category = "Character Movement: Sliding", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
+	float SlideForwardBoost = 200.0f;
+
+	UPROPERTY(Category = "Character Movement: Sliding", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
+	float StartSlideSpeedMinimum = 550.0f;
+
+	UPROPERTY(Category = "Character Movement: Sliding", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
+	float SlideSpeedThreshold = 50.0f;
+
+	/**
+	 * Max angle in degrees of a walkable surface. Any greater than this and it is too steep to be walkable.
+	 */
+	UPROPERTY(Category = "Character Movement: Sliding", EditAnywhere, meta = (ClampMin = "0.0", ClampMax = "90.0", UIMin = "0.0", UIMax = "90.0", ForceUnits = "degrees"))
+	float SlideFloorAngle;
+
+	/**
+	 * Minimum Z value for floor normal. If less, not a walkable surface. Computed from WalkableFloorAngle.
+	 */
+	UPROPERTY(Category = "Character Movement: Sliding", VisibleAnywhere)
+	float SlideFloorZ;
+
+	UPROPERTY(Transient)
+	FFindFloorResult SlideFloorResult;
+
+	UPROPERTY(Transient)
+	float CachedSlideSpeedThresholdSquared;
+
+	UPROPERTY(Transient)
+	float CachedMinimumSlideSpeedSquared;
+
+	bool CanBeginSliding(const FFindFloorResult& FloorResult) const;
+
+	bool CanSlideOnSurface(const FFindFloorResult& FloorResult) const;
+
+	void SetSlidableFloorAngle(float Angle);
+
+	void SetSlidableFloorZ(float InWalkableFloorZ);
+
+	void StartSliding(const FFindFloorResult& SlideFloor);
+
+	void CalculateSlideVelocity(float DeltaTime, const FVector& InputVec, FVector& OutGravitationalAccelVec);
+
+public:
+
+	bool IsSliding() const;
 
 protected:
 

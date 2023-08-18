@@ -31,6 +31,8 @@ UFPMovementComponent::UFPMovementComponent(const FObjectInitializer& ObjectIniti
 
 	WalkAcceleration = 1024.0f;
 	BrakingDecelerationWalking = WalkAcceleration;
+
+	SetSlidableFloorZ(.31);
 }
 
 void UFPMovementComponent::PostLoad()
@@ -63,6 +65,9 @@ void UFPMovementComponent::InitializeComponent()
 		const UCapsuleComponent* CharacterCapsule = FPPCharacter->GetCapsuleComponent();
 		CachedDefaultCapsuleHalfHeight = CharacterCapsule->GetUnscaledCapsuleHalfHeight();
 		CachedOwnerChar = FPPCharacter;
+
+		CachedMinimumSlideSpeedSquared = StartSlideSpeedMinimum * StartSlideSpeedMinimum;
+		CachedSlideSpeedThresholdSquared = SlideSpeedThreshold * SlideSpeedThreshold;
 	}
 }
 
@@ -83,6 +88,11 @@ void UFPMovementComponent::PostEditChangeProperty(FPropertyChangedEvent& Propert
 	{
 		// Compute WalkableFloorZ from the Angle.
 		SetWalkableFloorAngle(WalkableFloorAngle);
+	}
+	else if (PropertyThatChanged && PropertyThatChanged->GetFName() == GET_MEMBER_NAME_CHECKED(UFPMovementComponent, SlideFloorAngle))
+	{
+		// Compute WalkableFloorZ from the Angle.
+		SetSlidableFloorAngle(SlideFloorAngle);
 	}
 }
 #endif // WITH_EDITOR
@@ -154,6 +164,13 @@ void UFPMovementComponent::PerformWalkMovement(const float DeltaTime, const FVec
 	{
 		DoJump();
 		PerformFallMovement(DeltaTime, InputVector);
+		return;
+	}
+
+	if (CanBeginSliding(CurrentFloor))
+	{
+		StartSliding(CurrentFloor);
+		PerformSlideMovement(DeltaTime, InputVector);
 		return;
 	}
 
@@ -272,10 +289,6 @@ void UFPMovementComponent::CalculateGroundVelocity(const FVector& InputVector, f
 	}
 	Velocity += VelocityDelta;
 	//UE_LOG(LogTemp, Warning, TEXT("after Vel: %s, after Delta: %s"), *Velocity.ToString(), *VelocityDelta.ToString());
-}
-
-void UFPMovementComponent::PerformSlideMovement(const float DeltaTime, const FVector& InputVector)
-{
 }
 
 bool UFPMovementComponent::CanSprint(const FVector& InputVector) const
@@ -743,6 +756,11 @@ void UFPMovementComponent::StartFalling()
 
 void UFPMovementComponent::PerformFallMovement(const float DeltaTime, const FVector& InputVector)
 {
+	if (DeltaTime <= 0.0f)
+	{
+		return;
+	}
+
 	FVector PositionBeforeMove = UpdatedComponent->GetComponentLocation();
 
 	AFirstPersonProjCharacter* Character = GetFPPOwner();
@@ -772,7 +790,12 @@ void UFPMovementComponent::PerformFallMovement(const float DeltaTime, const FVec
 		{
 			FindFloor(UpdatedComponent->GetComponentLocation(), CurrentFloor);
 
-			if (CurrentFloor.IsWalkableFloor())
+			if (CanBeginSliding(CurrentFloor))
+			{
+				StartSliding(CurrentFloor);
+				return;
+			}
+			else if (CurrentFloor.IsWalkableFloor())
 			{
 				StartGroundMovement();
 				return;
@@ -868,6 +891,184 @@ void UFPMovementComponent::CalculateFallVelocity(const FVector& InputVector, flo
 	//UE_LOG(LogTemp, Warning, TEXT("New Velocity: %s"), *Velocity.ToString());
 }
 
+void UFPMovementComponent::PerformSlideMovement(const float DeltaTime, const FVector& InputVector)
+{
+	if (DeltaTime <= 0.0f)
+	{
+		return;
+	}
+
+	if (CachedOwnerChar->ConsumeJumpInput() && CanJump())
+	{
+		DoJump();
+		PerformFallMovement(DeltaTime, InputVector);
+		return;
+	}
+
+	TickCrouch(DeltaTime);
+
+	float RemainingDeltaTime = DeltaTime;
+	const FVector PositionBeforeSlide = UpdatedComponent->GetComponentLocation();
+	int32 Iterations = 0;
+	FVector GravitationalAcceleration = FVector::ZeroVector;
+	bool bCouldPreviouslyWalkOnSurface = SlideFloorResult.IsWalkableFloor();
+
+	while (RemainingDeltaTime > 0.0f && Iterations < 3)
+	{
+		CalculateSlideVelocity(DeltaTime, InputVector, GravitationalAcceleration);
+		FVector MoveDelta = Velocity * RemainingDeltaTime;
+		FHitResult SlideHitResult = SlideFloorResult.HitResult;
+		SlideAlongSurface(MoveDelta, 1.0f, SlideFloorResult.HitResult.Normal, SlideHitResult, true);
+		RemainingDeltaTime -= RemainingDeltaTime * SlideHitResult.Time;
+
+		/*
+		if (SlideHitResult.bBlockingHit)
+		{
+			bool bShouldMoveAgain = true;
+			if (FMath::IsNearlyZero(SlideHitResult.Normal.Z))
+			{
+				const FVector Vel2D = Velocity.GetSafeNormal2D();
+				const float VelocityNormalDot = -SlideHitResult.Normal | Vel2D;
+				if (VelocityNormalDot <= .6)
+				{
+					// Try to bounce off of the surface.
+					const FVector DeflectionVectorDirection2D = Vel2D - Vel2D.ProjectOnToNormal(SlideHitResult.Normal) * 2;
+					const FVector NewVelocity = DeflectionVectorDirection2D * Velocity.Size2D() * (1.0f - VelocityNormalDot);
+					Velocity = FVector(NewVelocity.X, NewVelocity.Y, Velocity.Z);
+				}
+				else
+				{
+					break;
+				}
+			}
+			else
+			{
+				// We may have hit another flatter surface. Recheck the floor and try again.
+				FindFloor(UpdatedComponent->GetComponentLocation(), SlideFloorResult);
+
+				if (CanSlideOnSurface(SlideFloorResult))
+				{
+					const FVector GravityAccelerationDirection = FVector::VectorPlaneProject(FVector::DownVector, SlideFloorResult.HitResult.Normal).GetSafeNormal();
+					const FVector CurrentVelDirection = Velocity.GetSafeNormal();
+					const FVector NewVelDirection = FVector(CurrentVelDirection.X, CurrentVelDirection.Y, GravityAccelerationDirection.Z).GetSafeNormal();
+					Velocity = Velocity.Size() * NewVelDirection;
+				}
+				else
+				{
+					break;
+				}
+			}
+		}
+		*/
+
+		++Iterations;
+	}
+
+	FindFloor(UpdatedComponent->GetComponentLocation(), SlideFloorResult);
+	if (!bCouldPreviouslyWalkOnSurface && SlideFloorResult.IsWalkableFloor())
+	{
+		CachedOwnerChar->OnLanded(SlideFloorResult.HitResult);
+	}
+
+	if (RemainingDeltaTime < DeltaTime)
+	{
+		Velocity = (UpdatedComponent->GetComponentLocation() - PositionBeforeSlide) / (DeltaTime - RemainingDeltaTime);
+	}
+
+	bool bShouldStopSlide = !bWantsToCrouch || !CanSlideOnSurface(SlideFloorResult);
+	bShouldStopSlide |= GravitationalAcceleration.IsNearlyZero(4.0f) && Velocity.SizeSquared2D() <= CachedSlideSpeedThresholdSquared;
+	UE_LOG(LogTemp, Warning, TEXT("Velocity: %s, Grav acceleration: %s"), *Velocity.ToString(), *GravitationalAcceleration.ToString());
+	if (bShouldStopSlide)
+	{
+		if (!SlideFloorResult.IsWalkableFloor())
+		{
+			StartFalling();
+			PerformFallMovement(RemainingDeltaTime, InputVector);
+		}
+		else
+		{
+			CurrentFloor = SlideFloorResult;
+			StartGroundMovement();
+			PerformWalkMovement(RemainingDeltaTime, InputVector);
+		}
+	}
+}
+
+bool UFPMovementComponent::CanBeginSliding(const FFindFloorResult& FloorResult) const
+{
+	return bWantsToCrouch && Velocity.SizeSquared() >= CachedMinimumSlideSpeedSquared && CanSlideOnSurface(FloorResult);
+}
+
+bool UFPMovementComponent::CanSlideOnSurface(const FFindFloorResult& FloorResult) const
+{
+	return FloorResult.bBlockingHit && FloorResult.HitResult.Normal.Z >= SlideFloorZ;
+}
+
+void UFPMovementComponent::SetSlidableFloorAngle(float Angle)
+{
+	SlideFloorAngle = Angle;
+	SlideFloorZ = FMath::Cos(FMath::DegreesToRadians(Angle));
+}
+
+void UFPMovementComponent::SetSlidableFloorZ(float InWalkableFloorZ)
+{
+	SlideFloorZ = InWalkableFloorZ;
+	SlideFloorAngle = FMath::RadiansToDegrees(FMath::Acos(InWalkableFloorZ));
+}
+
+void UFPMovementComponent::StartSliding(const FFindFloorResult& NewSlideFloor)
+{
+	SlideFloorResult = NewSlideFloor;
+	SetMovementMode(EFPMovementMode::Sliding);
+}
+
+void UFPMovementComponent::CalculateSlideVelocity(float DeltaTime, const FVector& InputVector, FVector& OutGravitationalAccelVec)
+{
+	const FVector GravityAcceelerationDirection = FVector::VectorPlaneProject(FVector::DownVector, SlideFloorResult.HitResult.Normal).GetSafeNormal();
+	const float GravityAccelerationRatio = (1.0f - SlideFloorResult.HitResult.Normal.Z) / (1.0f - SlideFloorZ);
+	OutGravitationalAccelVec = GravityAcceelerationDirection * SlideGravityAcceleration * GravityAccelerationRatio;
+
+	FVector SlideFrictionAccelerationVector = FVector::ZeroVector;
+	const float VelocityGravityDot = GravityAcceelerationDirection | Velocity.GetSafeNormal();
+	// If we are moving perpindicular to the gravity vector, apply slide friction.
+	if (FMath::Abs(VelocityGravityDot) <= .1f)
+	{
+		SlideFrictionAccelerationVector = -Velocity.GetSafeNormal2D() * Velocity.Size2D() * SlideFrictionFactor * (1.0f - GravityAccelerationRatio);
+	}
+
+	// Consider lateral slide input and deceleration.
+	FVector InputAcceleration = FVector::ZeroVector;
+
+	float InputVelocityDot = Velocity.GetSafeNormal2D() | InputVector.GetSafeNormal2D();
+	if (InputVelocityDot <= -.45f)
+	{
+		InputAcceleration += Velocity.GetSafeNormal() * InputVelocityDot * SlideBrakingDeceleration;
+	}
+	if (!InputAcceleration.IsNearlyZero())
+	{
+		// Subtract the deceleration vector from the velocity to allow the player to change directions.
+		// Scale by friction.
+		const FVector Velocity2D = FVector(Velocity.X, Velocity.Y, 0);
+		//Velocity = Velocity - (Velocity2D - InputAcceleration.GetSafeNormal() * Velocity2D.Size()) * DeltaTime * .3f;
+		//UE_LOG(LogTemp, Warning, TEXT("Old vel: %s, New Vel: %s, Accel vector: %s"), *OldVel.ToString(), *Velocity.ToString(), *Acceleration.ToString());
+	}
+
+	FVector LateralVec = Velocity.GetSafeNormal2D() ^ FVector::UpVector;
+	const FVector LateralInputVec = InputVector.ProjectOnToNormal(LateralVec) * SlideLateralAcceleration;
+	//InputAcceleration += LateralInputVec;
+	//UE_LOG(LogTemp, Warning, TEXT("Projection: %s, Lateral Vector: %s"), *InputVector.ProjectOnToNormal(LateralVec).ToString(), *LateralInputVec.ToString());
+
+	//UE_LOG(LogTemp, Warning, TEXT("Slide: Ratio: %f, Grav accel: %s, friction: %s, input: %s"), GravityAccelerationRatio, *OutGravitationalAccelVec.ToString(), *SlideFrictionAccelerationVector.ToString(), *InputAcceleration.ToString());
+	FVector FinalAcceleration = (OutGravitationalAccelVec + SlideFrictionAccelerationVector + InputAcceleration) * DeltaTime;
+
+	Velocity += FinalAcceleration;
+}
+
+bool UFPMovementComponent::IsSliding() const
+{
+	return MovementMode == EFPMovementMode::Sliding;
+}
+
 void UFPMovementComponent::SetMovementMode(EFPMovementMode NewMovementMode)
 {
 	const EFPMovementMode OldMode = MovementMode;
@@ -941,12 +1142,17 @@ bool UFPMovementComponent::IsFalling() const
 
 bool UFPMovementComponent::IsMovingOnGround() const
 {
-	return UpdatedComponent && MovementMode == EFPMovementMode::Walking;
+	return UpdatedComponent && MovementMode == EFPMovementMode::Walking || MovementMode == EFPMovementMode::Sliding;
 }
 
 float UFPMovementComponent::GetGravityZ() const
 {
 	return Super::GetGravityZ() * GravityScale;
+}
+
+const FFindFloorResult& UFPMovementComponent::GetCurrentFloorResult() const
+{
+	return CurrentFloor;
 }
 
 void UFPMovementComponent::SetWantsToSprint(bool WantstoSprint)
@@ -994,7 +1200,7 @@ void UFPMovementComponent::OnFallMovementStopped()
 
 bool UFPMovementComponent::CanCrouch() const
 {
-	return !bIsSprinting && MovementMode != EFPMovementMode::Sliding;
+	return !bIsSprinting;
 }
 
 void UFPMovementComponent::SetWantsToCrouch(bool WantsToCrouch)
@@ -1010,7 +1216,7 @@ void UFPMovementComponent::TickCrouch(float DeltaTime)
 	if (bWantsToCrouch && CrouchFrac < 1.0f && CanCrouch())
 	{
 		const bool bWasPreviouslyUncrouched = CrouchFrac < .5f;
-		CrouchFrac = FMath::Min(CrouchFrac + (DeltaTime / TimeToCrouchSeconds), 1.0f);
+		CrouchFrac = FMath::Min(CrouchFrac + (DeltaTime / (IsSliding() ? TimeToCrouchSliding : TimeToCrouchSeconds)), 1.0f);
 		if (bWasPreviouslyUncrouched && CrouchFrac >= .5f)
 		{
 			FPPCharacter->GetCapsuleComponent()->SetCapsuleHalfHeight(CapsuleCrouchHalfHeight);
